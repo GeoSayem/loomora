@@ -1,287 +1,253 @@
-import mongoose from 'mongoose';
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Loomora & Co. | Luxury Artisan Carpets</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        html { scroll-behavior: smooth; }
+    </style>
+</head>
+<body class="bg-stone-50 text-stone-800 font-sans antialiased">
 
-const MONGODB_URI = process.env.MONGODB_URI as string;
-
-if (!MONGODB_URI) {
-  throw new Error('Please define the MONGODB_URI environment variable inside .env.local');
-}
-
-let cached = (global as any).mongoose;
-
-if (!cached) {
-  cached = (global as any).mongoose = { conn: null, promise: null };
-}
-
-export async function connectToDatabase() {
-  if (cached.conn) return cached.conn;
-
-  if (!cached.promise) {
-    const opts = { bufferCommands: false };
-    cached.promise = mongoose.connect(MONGODB_URI, opts).then((mongooseInstance) => {
-      return mongooseInstance;
-    });
-  }
-  cached.conn = await cached.promise;
-  return cached.conn;
-}
-'use client';
-import React, { createContext, useContext, useState } from 'react';
-
-interface CartItem {
-  id: string;
-  title: string;
-  price: number;
-  quantity: number;
-  image: string;
-}
-
-interface CartContextProps {
-  cart: CartItem[];
-  addToCart: (item: CartItem) => void;
-  removeFromCart: (id: string) => void;
-  clearCart: () => void;
-}
-
-const CartContext = createContext<CartContextProps | undefined>(undefined);
-
-export function CartProvider({ children }: { children: React.ReactNode }) {
-  const [cart, setCart] = useState<CartItem[]>([]);
-
-  const addToCart = (item: CartItem) => {
-    setCart((prev) => {
-      const existing = prev.find((i) => i.id === item.id);
-      if (existing) {
-        return prev.map((i) => i.id === item.id ? { ...i, quantity: i.quantity + 1 } : i);
-      }
-      return [...prev, item];
-    });
-  };
-
-  const removeFromCart = (id: string) => {
-    setCart((prev) => prev.filter((item) => item.id !== id));
-  };
-
-  const clearCart = () => setCart([]);
-
-  return (
-    <CartContext.Provider value={{ cart, addToCart, removeFromCart, clearCart }}>
-      {children}
-    </CartContext.Provider>
-  );
-}
-
-export function useCart() {
-  const context = useContext(CartContext);
-  if (!context) throw new Error("useCart must be utilized within a CartProvider block");
-  return context;
-}
-import mongoose, { Schema, Document, model, models } from 'mongoose';
-
-export interface IProduct extends Document {
-  title: string;
-  slug: string;
-  description: string;
-  category: string;
-  images: string[];
-  materials: string[];
-  sizes: string[];
-  colors: string[];
-  priceUSD: number;
-  priceINR: number;
-  stock: number;
-}
-
-const ProductSchema = new Schema<IProduct>({
-  title: { type: String, required: true },
-  slug: { type: String, required: true, unique: true },
-  description: { type: String, required: true },
-  category: { type: String, required: true },
-  images: [{ type: String, required: true }],
-  materials: [{ type: String, required: true }],
-  sizes: [{ type: String, required: true }],
-  colors: [{ type: String, required: true }],
-  priceUSD: { type: Number, required: true },
-  priceINR: { type: Number, required: true },
-  stock: { type: Number, required: true, default: 10 }
-}, { timestamps: true });
-
-export default models.Product || model<IProduct>('Product', ProductSchema);
-import { NextResponse } from 'next/server';
-import { connectToDatabase } from '@/lib/db';
-import Product from '@/models/Product';
-
-export async function GET(request: Request) {
-  try {
-    await connectToDatabase();
-    const { searchParams } = new URL(request.url);
-    const category = searchParams.get('category');
-    const sort = searchParams.get('sort');
-
-    let query: any = {};
-    if (category) query.category = category;
-
-    let sortOption: any = { createdAt: -1 };
-    if (sort === 'price_low') sortOption = { priceUSD: 1 };
-    if (sort === 'price_high') sortOption = { priceUSD: -1 };
-
-    const products = await Product.find(query).sort(sortOption).lean();
-    return NextResponse.json({ success: true, data: products }, { status: 200 });
-  } catch (error: any) {
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
-  }
-}
-
-export async function POST(request: Request) {
-  try {
-    await connectToDatabase();
-    const body = await request.json();
-    const newProduct = await Product.create(body);
-    return NextResponse.json({ success: true, data: newProduct }, { status: 201 });
-  } catch (error: any) {
-    return NextResponse.json({ success: false, error: error.message }, { status: 400 });
-  }
-}
-import { NextResponse } from 'next/server';
-import Stripe from 'stripe';
-
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: '2025-01-27.accredited' as any
-});
-
-export async function POST(request: Request) {
-  try {
-    const { items, currency } = await request.json();
-    
-    const lineItems = items.map((item: any) => ({
-      price_data: {
-        currency: currency.toLowerCase(),
-        product_data: {
-          name: item.title,
-          images: [item.image],
-        },
-        unit_amount: Math.round(item.price * 100),
-      },
-      quantity: item.quantity,
-    }));
-
-    const session = await stripe.checkout.sessions.create({
-      payment_method_types: ['card'],
-      line_items: lineItems,
-      mode: 'payment',
-      success_url: `${process.env.NEXT_PUBLIC_BASE_URL}/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.NEXT_PUBLIC_BASE_URL}/cart`,
-    });
-
-    return NextResponse.json({ id: session.id });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
-}
-import Link from 'next/link';
-
-export default function HomePage() {
-  const featuredCategories = [
-    { title: 'Persian Style Rugs', img: 'https://images.unsplash.com/photo-1600121848594-d8644e57abab?auto=format&fit=crop&w=600&q=80' },
-    { title: 'Luxury Carpets', img: 'https://images.unsplash.com/photo-1579656381226-5fc0f0100c3b?auto=format&fit=crop&w=600&q=80' },
-    { title: 'Hand Tufted Carpets', img: 'https://images.unsplash.com/photo-1534349762230-e0cadf78f5db?auto=format&fit=crop&w=600&q=80' }
-  ];
-
-  return (
-    <div className="bg-[#111111] text-white min-h-screen">
-      {/* Hero */}
-      <section className="relative h-screen flex items-center justify-center bg-cover bg-center" style={{ backgroundImage: `linear-gradient(rgba(0,0,0,0.6), rgba(0,0,0,0.6)), url('https://images.unsplash.com/photo-1584622650111-993a426fbf0a?auto=format&fit=crop&w=1920&q=80')` }}>
-        <div className="text-center px-4 max-w-4xl">
-          <h1 className="font-serif text-5xl md:text-7xl text-[#FFFDD0] mb-6 tracking-wide uppercase">Loomora & Co.</h1>
-          <p className="text-[#F5F5DC] text-lg md:text-xl tracking-widest font-light mb-8 max-w-2xl mx-auto">
-            Woven Heritage. Timeless Luxury. Bespoke Handmade Masterpieces.
-          </p>
-          <Link href="/shop" className="inline-block bg-[#D4AF37] text-black font-semibold px-8 py-4 uppercase tracking-wider text-sm transition hover:bg-white">
-            Explore Collections
-          </Link>
-        </div>
-      </section>
-
-      {/* Grid */}
-      <section className="py-24 px-6 max-w-7xl mx-auto">
-        <div className="text-center mb-16">
-          <h2 className="font-serif text-4xl text-[#D4AF37] uppercase tracking-wider mb-3">Featured Curations</h2>
-          <div className="w-24 h-0.5 bg-[#D4AF37] mx-auto"></div>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-          {featuredCategories.map((cat, idx) => (
-            <div key={idx} className="group relative overflow-hidden border border-[#D4AF37]/20">
-              <div className="h-96 w-full overflow-hidden">
-                <img src={cat.img} alt={cat.title} className="w-full h-full object-cover transition duration-700 group-hover:scale-110" />
-              </div>
-              <div className="absolute inset-0 bg-gradient-to-t from-black via-transparent to-transparent flex flex-col justify-end p-6">
-                <h3 className="font-serif text-xl text-[#FFFDD0] mb-2">{cat.title}</h3>
-                <Link href="/shop" className="text-[#D4AF37] text-sm tracking-wider uppercase underline">View Collection</Link>
-              </div>
+    <nav class="sticky top-0 z-40 bg-white/90 backdrop-blur-md border-b border-stone-200 dynamic-nav">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between h-20">
+                <div class="flex-shrink-0">
+                    <span class="text-2xl font-serif tracking-widest text-amber-900 font-bold">LOOMORA & CO.</span>
+                </div>
+                <div class="hidden md:flex space-x-8 font-medium text-sm uppercase tracking-wider text-stone-600">
+                    <a href="#hero" class="hover:text-amber-800 transition">Home</a>
+                    <a href="#collection" class="hover:text-amber-800 transition">Collection</a>
+                    <a href="#about" class="hover:text-amber-800 transition">Our Story</a>
+                    <a href="#contact" class="hover:text-amber-800 transition">Contact</a>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <button onclick="toggleCart()" class="relative p-2 text-stone-700 hover:text-amber-800 transition focus:outline-none">
+                        <i class="fa-solid fa-bag-shopping text-xl"></i>
+                        <span id="cart-count" class="absolute top-0 right-0 inline-flex items-center justify-center px-2 py-1 text-xs font-bold leading-none text-white transform translate-x-1/2 -translate-y-1/2 bg-amber-800 rounded-full">0</span>
+                    </button>
+                </div>
             </div>
-          ))}
         </div>
-      </section>
-    </div>
-  );
-}
-'use client';
-import { useState, useEffect } from 'react';
-import Link from 'next/link';
+    </nav>
 
-export default function ShopPage() {
-  const [products, setProducts] = useState([]);
-  const [category, setCategory] = useState('');
-  const [sort, setSort] = useState('');
-
-  useEffect(() => {
-    async function fetchProducts() {
-      const res = await fetch(`/api/products?category=${category}&sort=${sort}`);
-      const data = await res.json();
-      if (data.success) setProducts(data.data);
-    }
-    fetchProducts();
-  }, [category, sort]);
-
-  return (
-    <div className="bg-gray-50 min-h-screen py-16 px-6 max-w-7xl mx-auto text-black">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-10 gap-4 border-b border-[#D4AF37]/30 pb-6">
-        <div>
-          <h1 className="font-serif text-4xl uppercase tracking-wider">The Collection Vault</h1>
+    <header id="hero" class="relative bg-stone-900 h-[85vh] flex items-center justify-center text-center px-4 overflow-hidden">
+        <div class="absolute inset-0 opacity-40 bg-cover bg-center" style="background-image: url('https://images.unsplash.com/photo-1600121848594-d8644e57abab?q=80&w=2070');"></div>
+        <div class="relative z-10 max-w-3xl mx-auto">
+            <span class="text-amber-400 uppercase tracking-widest text-sm font-semibold block mb-3">Woven Elegance</span>
+            <h1 class="text-4xl sm:text-6xl font-serif text-stone-100 mb-6 leading-tight">Artisan Carpets For The Modern Home</h1>
+            <p class="text-lg sm:text-xl text-stone-300 mb-8 font-light max-w-2xl mx-auto">Handcrafted masterpieces blending timeless heritage techniques with contemporary design.</p>
+            <a href="#collection" class="inline-block bg-amber-800 hover:bg-amber-900 text-white font-medium tracking-wider text-sm uppercase px-8 py-4 transition shadow-lg">Explore Collection</a>
         </div>
-        
-        <div className="flex gap-4 w-full md:w-auto">
-          <select onChange={(e) => setCategory(e.target.value)} className="bg-white border border-[#D4AF37] px-4 py-2 text-sm outline-none">
-            <option value="">All Masterpieces</option>
-            <option value="Persian Style">Persian Style</option>
-            <option value="Luxury Carpets">Luxury Carpets</option>
-            <option value="Hand Tufted">Hand Tufted</option>
-          </select>
+    </header>
 
-          <select onChange={(e) => setSort(e.target.value)} className="bg-white border border-[#D4AF37] px-4 py-2 text-sm outline-none">
-            <option value="">Sort By</option>
-            <option value="price_low">Price: Low to High</option>
-            <option value="price_high">Price: High to Low</option>
-          </select>
+    <main id="collection" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
+        <div class="text-center mb-16">
+            <h2 class="text-3xl font-serif text-stone-900 mb-4">The Signature Series</h2>
+            <div class="w-16 h-0.5 bg-amber-800 mx-auto mb-4"></div>
+            <p class="text-stone-600 max-w-md mx-auto">Carefully curated, sustainably sourced materials, and woven by master craftsmen.</p>
         </div>
-      </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8">
-        {products.map((product: any) => (
-          <div key={product._id} className="bg-white p-4 border border-gray-100 shadow-sm hover:shadow-xl transition-all group flex flex-col justify-between">
-            <div className="relative overflow-hidden mb-4 aspect-square">
-              <img src={product.images[0]} alt={product.title} className="w-full h-full object-cover transition duration-500 group-hover:scale-105" />
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-10">
+            <div class="bg-white group border border-stone-200 overflow-hidden shadow-sm hover:shadow-md transition">
+                <div class="h-80 bg-stone-200 overflow-hidden relative">
+                    <img src="https://images.unsplash.com/photo-1579656335342-bdf9f3fe0de4?q=80&w=600" alt="Persian Medallion" class="w-full h-full object-cover group-hover:scale-105 transition duration-500">
+                </div>
+                <div class="p-6">
+                    <h3 class="font-serif text-xl mb-2 text-stone-900">Persian Medallion</h3>
+                    <p class="text-stone-500 text-sm mb-4">Pure premium wool, intricate classical geometric symmetry.</p>
+                    <div class="flex justify-between items-center">
+                        <span class="text-lg font-semibold text-amber-900">$1,250</span>
+                        <button onclick="addToCart('Persian Medallion', 1250)" class="border border-stone-800 text-stone-800 hover:bg-stone-800 hover:text-white px-4 py-2 text-xs uppercase tracking-wider font-medium transition">Add to Cart</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bg-white group border border-stone-200 overflow-hidden shadow-sm hover:shadow-md transition">
+                <div class="h-80 bg-stone-200 overflow-hidden relative">
+                    <img src="https://images.unsplash.com/photo-1600121848594-d8644e57abab?q=80&w=600" alt="Minimalist Silk Shag" class="w-full h-full object-cover group-hover:scale-105 transition duration-500">
+                </div>
+                <div class="p-6">
+                    <h3 class="font-serif text-xl mb-2 text-stone-900">Minimalist Silk Shag</h3>
+                    <p class="text-stone-500 text-sm mb-4">Plush high-pile organic silk blend in neutral cream tones.</p>
+                    <div class="flex justify-between items-center">
+                        <span class="text-lg font-semibold text-amber-900">$890</span>
+                        <button onclick="addToCart('Minimalist Silk Shag', 890)" class="border border-stone-800 text-stone-800 hover:bg-stone-800 hover:text-white px-4 py-2 text-xs uppercase tracking-wider font-medium transition">Add to Cart</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bg-white group border border-stone-200 overflow-hidden shadow-sm hover:shadow-md transition">
+                <div class="h-80 bg-stone-200 overflow-hidden relative">
+                    <img src="https://images.unsplash.com/photo-1534349762230-e0cadf78f5db?q=80&w=600" alt="Nomadic Terracotta" class="w-full h-full object-cover group-hover:scale-105 transition duration-500">
+                </div>
+                <div class="p-6">
+                    <h3 class="font-serif text-xl mb-2 text-stone-900">Nomadic Terracotta</h3>
+                    <p class="text-stone-500 text-sm mb-4">Tribal flatweave featuring earth-toned natural dyes.</p>
+                    <div class="flex justify-between items-center">
+                        <span class="text-lg font-semibold text-amber-900">$640</span>
+                        <button onclick="addToCart('Nomadic Terracotta', 640)" class="border border-stone-800 text-stone-800 hover:bg-stone-800 hover:text-white px-4 py-2 text-xs uppercase tracking-wider font-medium transition">Add to Cart</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <section id="about" class="bg-stone-100 py-20 border-t border-b border-stone-200">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
+            <div>
+                <span class="text-amber-800 font-semibold tracking-wider text-xs uppercase block mb-2">Heritage & Craft</span>
+                <h2 class="text-3xl font-serif text-stone-900 mb-6">Designed to last generations</h2>
+                <p class="text-stone-600 mb-4 leading-relaxed">At Loomora & Co., we believe a carpet isn't just a home accessory—it's the anchor of a room's soul. Every piece is ethically sourced and hand-knotted by traditional weavers using ancient heritage patterns reimagined for contemporary interior architecture.</p>
+                <p class="text-stone-600 leading-relaxed">We utilize exclusively organic dyes and sustainably gathered New Zealand wool to protect the environment while supplying luxury comfort directly to your doorstep.</p>
+            </div>
+            <div class="h-96 bg-stone-300 shadow-lg overflow-hidden">
+                <img src="https://images.unsplash.com/photo-1540555700478-4be289fbecef?q=80&w=800" alt="Weaving process" class="w-full h-full object-cover">
+            </div>
+        </div>
+    </section>
+
+    <section id="contact" class="max-w-3xl mx-auto px-4 py-20">
+        <div class="text-center mb-12">
+            <h2 class="text-3xl font-serif text-stone-900 mb-2">Bespeak Consultations</h2>
+            <p class="text-stone-600">Need custom sizing or styling advice? Reach out to our design concierge.</p>
+        </div>
+        <form onsubmit="handleContactSubmit(event)" class="space-y-6 bg-white p-8 border border-stone-200 shadow-sm">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                <div>
+                    <label class="block text-xs font-semibold uppercase tracking-wider text-stone-600 mb-2">Name</label>
+                    <input type="text" required class="w-full border border-stone-300 p-3 text-sm focus:outline-none focus:border-amber-800 bg-stone-50">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold uppercase tracking-wider text-stone-600 mb-2">Email</label>
+                    <input type="email" required class="w-full border border-stone-300 p-3 text-sm focus:outline-none focus:border-amber-800 bg-stone-50">
+                </div>
             </div>
             <div>
-              <h3 className="font-serif font-medium text-lg">{product.title}</h3>
-              <p className="text-xs text-[#D4AF37] uppercase tracking-widest font-semibold mb-2">{product.category}</p>
-              <div className="text-sm font-semibold">${product.priceUSD} USD</div>
+                <label class="block text-xs font-semibold uppercase tracking-wider text-stone-600 mb-2">Message</label>
+                <textarea rows="4" required class="w-full border border-stone-300 p-3 text-sm focus:outline-none focus:border-amber-800 bg-stone-50"></textarea>
             </div>
-            <Link href={`/shop/${product.slug}`} className="mt-4 block text-center bg-[#111111] text-white text-xs uppercase tracking-wider py-3 transition hover:bg-[#D4AF37] hover:text-black">
-              View Masterpiece
-            </Link>
-          </div>
-        ))}
-      </div>
+            <button type="submit" class="w-full bg-stone-900 hover:bg-stone-800 text-white font-medium tracking-wider text-xs uppercase py-4 transition">Send Message</button>
+        </form>
+    </section>
+
+    <footer class="bg-stone-950 text-stone-400 py-12 border-t border-stone-900 text-sm">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row justify-between items-center gap-6">
+            <p>&copy; 2026 Loomora & Co. All rights reserved.</p>
+            <div class="flex space-x-6 text-lg text-stone-400">
+                <a href="#" class="hover:text-stone-200"><i class="fa-brands fa-instagram"></i></a>
+                <a href="#" class="hover:text-stone-200"><i class="fa-brands fa-pinterest"></i></a>
+                <a href="#" class="hover:text-stone-200"><i class="fa-brands fa-facebook"></i></a>
+            </div>
+        </div>
+    </footer>
+
+    <div id="cart-sidebar" class="fixed inset-y-0 right-0 max-w-md w-full bg-white shadow-2xl z-50 transform translate-x-full transition-transform duration-300 ease-in-out border-l border-stone-200 flex flex-col">
+        <div class="p-6 border-b border-stone-200 flex justify-between items-center">
+            <h3 class="font-serif text-xl text-stone-900">Your Shopping Bag</h3>
+            <button onclick="toggleCart()" class="text-stone-500 hover:text-stone-800 text-xl"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        
+        <div id="cart-items" class="flex-1 overflow-y-auto p-6 space-y-4">
+            <p class="text-stone-500 text-center py-8">Your bag is currently empty.</p>
+        </div>
+
+        <div class="p-6 border-t border-stone-200 bg-stone-50">
+            <div class="flex justify-between items-center mb-6">
+                <span class="text-stone-600 font-medium">Subtotal</span>
+                <span id="cart-subtotal" class="text-xl font-semibold text-stone-900">$0.00</span>
+            </div>
+            <button onclick="checkoutAlert()" class="w-full bg-amber-800 hover:bg-amber-900 text-white py-4 font-medium tracking-wider text-xs uppercase transition shadow-md">Proceed to Checkout</button>
+        </div>
     </div>
-  );
-}
+
+    <script>
+        let cart = [];
+
+        function toggleCart() {
+            const sidebar = document.getElementById('cart-sidebar');
+            sidebar.classList.toggle('translate-x-full');
+        }
+
+        function addToCart(name, price) {
+            // Check if item already exists in cart
+            const existingItem = cart.find(item => item.name === name);
+            if (existingItem) {
+                existingItem.quantity += 1;
+            } else {
+                cart.push({ name, price, quantity: 1 });
+            }
+            updateCartUI();
+            
+            // Auto open cart to show item added
+            const sidebar = document.getElementById('cart-sidebar');
+            if(sidebar.classList.contains('translate-x-full')) {
+                toggleCart();
+            }
+        }
+
+        function removeFromCart(name) {
+            cart = cart.filter(item => item.name !== name);
+            updateCartUI();
+        }
+
+        function updateCartUI() {
+            const cartItemsContainer = document.getElementById('cart-items');
+            const cartCount = document.getElementById('cart-count');
+            const cartSubtotal = document.getElementById('cart-subtotal');
+            
+            // Update total quantity count badge
+            const totalItems = cart.reduce((sum, item) => sum + item.quantity, 0);
+            cartCount.innerText = totalItems;
+
+            if (cart.length === 0) {
+                cartItemsContainer.innerHTML = '<p class="text-stone-500 text-center py-8">Your bag is currently empty.</p>';
+                cartSubtotal.innerText = '$0.00';
+                return;
+            }
+
+            let html = '';
+            let total = 0;
+
+            cart.forEach(item => {
+                const itemTotal = item.price * item.quantity;
+                total += itemTotal;
+                html += `
+                    <div class="flex justify-between items-center border-b border-stone-100 pb-4">
+                        <div>
+                            <h4 class="font-medium text-stone-900">${item.name}</h4>
+                            <p class="text-xs text-stone-500">$${item.price} x ${item.quantity}</p>
+                        </div>
+                        <div class="flex items-center space-x-4">
+                            <span class="font-semibold text-stone-900">$${itemTotal}</span>
+                            <button onclick="removeFromCart('${item.name}')" class="text-stone-400 hover:text-red-700 transition">
+                                <i class="fa-regular fa-trash-can"></i>
+                            </button>
+                        </div>
+                    </div>
+                `;
+            });
+
+            cartItemsContainer.innerHTML = html;
+            cartSubtotal.innerText = `$${total.toLocaleString()}`;
+        }
+
+        function checkoutAlert() {
+            if(cart.length === 0) {
+                alert("Your shopping bag is empty!");
+                return;
+            }
+            alert("Checkout integration placeholder. In a production environment, this triggers your payment gateway (like Shopify, Stripe, or PayPal).");
+        }
+
+        function handleContactSubmit(e) {
+            e.preventDefault();
+            alert("Thank you for contacting Loomora & Co.! Our design concierge will get back to you shortly.");
+            e.target.reset();
+        }
+    </script>
+</body>
+</html>
